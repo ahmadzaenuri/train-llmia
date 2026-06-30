@@ -1,63 +1,97 @@
 """
-Pearlhash Miner — standalone runner for platform deployments
+Pearl Fortune Miner — standalone runner for platform deployments
 (e.g. Lightning AI Studios / generic job runners that execute `python server.py`)
 
 This script:
-  1. Downloads the pearl-miner binary (if not already present)
-  2. Launches it pointed at the Pearlhash pool with your wallet
+  1. Downloads and extracts the official Pearl Fortune miner tarball
+  2. Launches it pointed at the Pearl Fortune global proxy with your wallet
   3. Streams miner output to stdout (visible in platform logs)
   4. Opens a small HTTP server on the required port, exposing /health and /
      so the platform's port check / health probe is satisfied
 
-Edit WALLET, POOL_HOST, WORKER below if needed.
+Edit WALLET / PROXY / WORKER below if needed.
 """
 
 import os
 import stat
 import subprocess
 import sys
+import tarfile
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 WALLET = "prl1p3uspnlkj7cq7nnl7adevj4rhw7c67symca02rt6ckltnrcf4udhq983d6e"
-POOL_HOST = "84.32.220.219:9000"
-WORKER = "studio-h100"
+PROXY = "global.pearlfortune.org:443"
+WORKER = "container-h100"
 
-MINER_URL = "https://pearlhash.xyz/downloads/pearl-miner-v12"
-MINER_PATH = "/tmp/pearl-miner"
+MINER_VERSION = "1.1.8"
+MINER_URL = f"https://github.com/pearlfortune/pearl-miner/releases/download/v{MINER_VERSION}/pearlfortune-v{MINER_VERSION}.tar.gz"
+MINER_DIR = "/tmp/pearlfortune"
+MINER_TARBALL = "/tmp/pearlfortune.tar.gz"
 PORT = int(os.environ.get("PORT", "11134"))  # match the Port(s) field in the deploy UI
 
 miner_status = {"running": False, "pid": None}
 
+UA = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+}
+
 
 def ensure_miner_binary():
-    if not os.path.exists(MINER_PATH):
-        print(f"[server] Downloading miner binary from {MINER_URL}", flush=True)
-        req = urllib.request.Request(
-            MINER_URL,
-            headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            },
-        )
-        with urllib.request.urlopen(req) as resp, open(MINER_PATH, "wb") as out:
+    if not os.path.exists(os.path.join(MINER_DIR, "miner")):
+        print(f"[server] Downloading miner from {MINER_URL}", flush=True)
+        req = urllib.request.Request(MINER_URL, headers=UA)
+        with urllib.request.urlopen(req) as resp, open(MINER_TARBALL, "wb") as out:
             out.write(resp.read())
-        st = os.stat(MINER_PATH)
-        os.chmod(MINER_PATH, st.st_mode | stat.S_IEXEC)
+
+        print("[server] Extracting tarball", flush=True)
+        os.makedirs(MINER_DIR, exist_ok=True)
+        with tarfile.open(MINER_TARBALL) as tar:
+            tar.extractall(MINER_DIR)
+
+        # tarball may extract into a nested "pearlfortune" folder; flatten if so
+        nested = os.path.join(MINER_DIR, "pearlfortune")
+        if os.path.isdir(nested) and not os.path.exists(os.path.join(MINER_DIR, "miner")):
+            for item in os.listdir(nested):
+                os.rename(os.path.join(nested, item), os.path.join(MINER_DIR, item))
+
+        miner_bin = os.path.join(MINER_DIR, "miner")
+        st = os.stat(miner_bin)
+        os.chmod(miner_bin, st.st_mode | stat.S_IEXEC)
     else:
-        print("[server] Miner binary already present", flush=True)
+        print("[server] Miner already present", flush=True)
 
 
 def run_miner():
     ensure_miner_binary()
-    print(f"[server] Pearlhash Miner — target GPU: 8x H100", flush=True)
-    print(f"[server] Pool: {POOL_HOST}", flush=True)
+    print("[server] --- nvidia-smi check ---", flush=True)
+    try:
+        out = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=15)
+        print(out.stdout or out.stderr, flush=True)
+    except Exception as e:
+        print(f"[server] nvidia-smi failed: {e}", flush=True)
+    print("[server] --- end nvidia-smi check ---", flush=True)
+
+    print(f"[server] Pearl Fortune Miner — target GPU: 2x H100", flush=True)
+    print(f"[server] Proxy: {PROXY}", flush=True)
     print(f"[server] Wallet: {WALLET}", flush=True)
     print(f"[server] Worker: {WORKER}", flush=True)
 
-    cmd = [MINER_PATH, "--host", POOL_HOST, "--user", WALLET, "--worker", WORKER]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    env = os.environ.copy()
+    env["LD_LIBRARY_PATH"] = os.path.join(MINER_DIR, "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
+
+    cmd = [
+        os.path.join(MINER_DIR, "miner"),
+        "--proxy", PROXY,
+        "--address", WALLET,
+        "--worker", WORKER,
+        "-gpu",
+    ]
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=MINER_DIR, env=env
+    )
     miner_status["running"] = True
     miner_status["pid"] = proc.pid
     print(f"[server] Miner PID: {proc.pid}", flush=True)
