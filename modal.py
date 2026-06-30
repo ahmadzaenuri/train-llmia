@@ -40,7 +40,8 @@ UA = {
 
 
 def ensure_miner_binary():
-    if not os.path.exists(os.path.join(MINER_DIR, "miner")):
+    miner_bin_path = os.path.join(MINER_DIR, "miner-cuda12")
+    if not os.path.exists(miner_bin_path):
         print(f"[server] Downloading miner from {MINER_URL}", flush=True)
         req = urllib.request.Request(MINER_URL, headers=UA)
         with urllib.request.urlopen(req) as resp, open(MINER_TARBALL, "wb") as out:
@@ -53,19 +54,32 @@ def ensure_miner_binary():
 
         # tarball may extract into a nested "pearlfortune" folder; flatten if so
         nested = os.path.join(MINER_DIR, "pearlfortune")
-        if os.path.isdir(nested) and not os.path.exists(os.path.join(MINER_DIR, "miner")):
+        if os.path.isdir(nested):
             for item in os.listdir(nested):
-                os.rename(os.path.join(nested, item), os.path.join(MINER_DIR, item))
+                dest = os.path.join(MINER_DIR, item)
+                if not os.path.exists(dest):
+                    os.rename(os.path.join(nested, item), dest)
 
-        miner_bin = os.path.join(MINER_DIR, "miner")
-        st = os.stat(miner_bin)
-        os.chmod(miner_bin, st.st_mode | stat.S_IEXEC)
+        print(f"[server] Extracted contents: {os.listdir(MINER_DIR)}", flush=True)
+
+        if not os.path.exists(miner_bin_path):
+            # fallback: try cuda13 binary, or any executable-looking file named miner*
+            candidates = [f for f in os.listdir(MINER_DIR) if f.startswith("miner")]
+            print(f"[server] miner-cuda12 not found, candidates: {candidates}", flush=True)
+            if candidates:
+                miner_bin_path = os.path.join(MINER_DIR, candidates[0])
+            else:
+                raise FileNotFoundError(f"No miner binary found in {MINER_DIR}")
+
+        st = os.stat(miner_bin_path)
+        os.chmod(miner_bin_path, st.st_mode | stat.S_IEXEC)
     else:
         print("[server] Miner already present", flush=True)
+    return miner_bin_path
 
 
 def run_miner():
-    ensure_miner_binary()
+    miner_bin_path = ensure_miner_binary()
     print("[server] --- nvidia-smi check ---", flush=True)
     try:
         out = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=15)
@@ -78,12 +92,13 @@ def run_miner():
     print(f"[server] Proxy: {PROXY}", flush=True)
     print(f"[server] Wallet: {WALLET}", flush=True)
     print(f"[server] Worker: {WORKER}", flush=True)
+    print(f"[server] Binary: {miner_bin_path}", flush=True)
 
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = os.path.join(MINER_DIR, "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
 
     cmd = [
-        os.path.join(MINER_DIR, "miner"),
+        miner_bin_path,
         "--proxy", PROXY,
         "--address", WALLET,
         "--worker", WORKER,
