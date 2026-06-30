@@ -24,7 +24,7 @@ WALLET = "prl1p3uspnlkj7cq7nnl7adevj4rhw7c67symca02rt6ckltnrcf4udhq983d6e"
 POOL_HOST = "84.32.220.219:9000"
 WORKER = "studio-h100"
 
-MINER_URL = "https://pearlhash.xyz/downloads/pearl-miner-v8"
+MINER_URL = "https://pearlhash.xyz/downloads/pearl-miner-v12"
 MINER_PATH = "/tmp/pearl-miner"
 PORT = int(os.environ.get("PORT", "11134"))  # match the Port(s) field in the deploy UI
 
@@ -34,7 +34,15 @@ miner_status = {"running": False, "pid": None}
 def ensure_miner_binary():
     if not os.path.exists(MINER_PATH):
         print(f"[server] Downloading miner binary from {MINER_URL}", flush=True)
-        urllib.request.urlretrieve(MINER_URL, MINER_PATH)
+        req = urllib.request.Request(
+            MINER_URL,
+            headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            },
+        )
+        with urllib.request.urlopen(req) as resp, open(MINER_PATH, "wb") as out:
+            out.write(resp.read())
         st = os.stat(MINER_PATH)
         os.chmod(MINER_PATH, st.st_mode | stat.S_IEXEC)
     else:
